@@ -5,10 +5,10 @@
       </el-input>
     </template>
     <template v-else-if="!scope.row.isFilter && result.dbType=='ElasticSearch'">
-      <div class="edit-column" :contenteditable="editable" style="height: 100%; line-height: 33px;" @input="editListen($event,scope)" @contextmenu.prevent="onContextmenu($event,scope)" v-html='dataformat(scope.row[scope.column.title])'></div>
+      <div class="edit-column" :class="cellClass(scope)" :contenteditable="editable" style="height: 100%; line-height: 33px;" @input="editListen($event,scope)" @click="selectCell(scope)" @contextmenu.prevent="onContextmenu($event,scope)" v-html='dataformat(scope.row[scope.column.title])'></div>
     </template>
     <template v-else>
-      <div class="edit-column" :contenteditable="editable" style="height: 100%; line-height: 33px;" @input="editListen($event,scope)" @contextmenu.prevent="onContextmenu($event,scope)">
+      <div class="edit-column" :class="cellClass(scope)" :contenteditable="editable" style="height: 100%; line-height: 33px;" @input="editListen($event,scope)" @click="selectCell(scope)" @contextmenu.prevent="onContextmenu($event,scope)">
         <template v-if="scope.row[scope.column.title]==null || scope.row[scope.column.title]==undefined">
           <span class='null-column'>(NULL)</span>
         </template>
@@ -24,7 +24,7 @@
 import { wrapByDb } from "@/common/wrapper";
 
 export default {
-  props: ["result", "scope", "editList","filterObj"],
+  props: ["result", "scope", "editList","filterObj", "selectedCell", "hasFilterRow"],
   methods: {
     dataformat(origin) {
       if (origin == undefined || origin == null) {
@@ -189,6 +189,25 @@ export default {
         minWidth: 230,
       });
       return false;
+    },
+    selectCell(scope) {
+      if (scope.row && scope.row.isFilter) return;
+      const displayRowIndex = this.hasFilterRow ? scope.rowIndex - 1 : scope.rowIndex;
+      this.$emit("cellSelected", {
+        rowIndex: displayRowIndex,
+        field: scope.column.title,
+        isFilter: false,
+      });
+    },
+    cellClass(scope) {
+      if (!this.selectedCell) return "";
+      const displayRowIndex = this.hasFilterRow ? scope.rowIndex - 1 : scope.rowIndex;
+      const isSelected =
+        this.selectedCell.rowIndex === displayRowIndex &&
+        this.selectedCell.fieldIndex != null &&
+        this.selectedCell.fieldIndex >= 0 &&
+        this.selectedCell.fieldName === scope.column.title;
+      return isSelected ? "cell-selected" : "";
     },
   },
   computed: {

@@ -1017,6 +1017,7 @@
 		"build": "webpack --progress --mode=production",
 		"lib": "webpack --config webpack.config.lib.js --progress -p",
 		"publich": "vsce publish",
+		"test": "node test/run.js",
 		"vscode:prepublish": "npm run build"
 	},
 	"devDependencies": {

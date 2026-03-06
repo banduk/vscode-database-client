@@ -11,16 +11,56 @@
       </div>
     </div>
     <!-- trigger when click -->
-    <ux-grid ref="dataTable" :data="filterData" v-loading='table.loading' size='small' :cell-style="{height: '35px'}" @sort-change="sort" :height="remainHeight" width="100vh" stripe :checkboxConfig="{ checkMethod: selectable}">
-      <ux-table-column type="checkbox" width="40" fixed="left"></ux-table-column>
-      <ux-table-column type="index" width="40" :seq-method="({row,rowIndex})=>(rowIndex||!row.isFilter)?rowIndex:undefined">
-        <Controller slot="header" :result="result" :toolbar="toolbar" />
-      </ux-table-column>
-      <ux-table-column v-for="(field,index) in (result.fields||[]).filter(field=>toolbar.showColumns.includes(field.name.toLowerCase()))" :key="index" :resizable="true" :field="field.name" :title="field.name" :sortable="true" :width="computeWidth(field,0)" edit-render>
-        <Header slot="header" slot-scope="scope" :result="result" :scope="scope" :index="index" />
-        <Row slot-scope="scope" :scope="scope" :result="result" :filterObj="toolbar.filter" :editList.sync="update.editList" @execute="execute" @sendToVscode="sendToVscode" @openEditor="openEditor" />
-      </ux-table-column>
-    </ux-grid>
+    <div class="result-layout" :class="`result-layout--${preview.position}`">
+      <div class="result-main">
+        <ux-grid ref="dataTable" :data="filterData" v-loading='table.loading' size='small' :cell-style="{height: '35px'}" @sort-change="sort" :height="remainHeight" width="100vh" stripe :checkboxConfig="{ checkMethod: selectable}">
+          <ux-table-column type="checkbox" width="40" fixed="left"></ux-table-column>
+          <ux-table-column type="index" width="40" :seq-method="({row,rowIndex})=>(rowIndex||!row.isFilter)?rowIndex:undefined">
+            <Controller slot="header" :result="result" :toolbar="toolbar" />
+          </ux-table-column>
+          <ux-table-column v-for="(field,index) in visibleFields" :key="index" :resizable="true" :field="field.name" :title="field.name" :sortable="true" :width="computeWidth(field,0)" edit-render>
+            <Header slot="header" slot-scope="scope" :result="result" :scope="scope" :index="index" />
+            <Row slot-scope="scope" :scope="scope" :result="result" :filterObj="toolbar.filter" :editList.sync="update.editList" :selectedCell="selectedCell" :hasFilterRow="hasFilterRow" @execute="execute" @sendToVscode="sendToVscode" @openEditor="openEditor" @cellSelected="onCellSelected" />
+          </ux-table-column>
+        </ux-grid>
+      </div>
+      <div class="result-preview" v-if="preview.visible">
+        <div class="result-preview__header">
+          <div class="result-preview__title">Preview</div>
+          <div class="result-preview__actions">
+            <el-switch v-model="preview.pinned" active-text="Pinned" inactive-text="Floating" @change="savePreviewSettings"></el-switch>
+            <el-select v-model="preview.position" size="mini" class="result-preview__position" @change="savePreviewSettings">
+              <el-option label="Right" value="right"></el-option>
+              <el-option label="Bottom" value="bottom"></el-option>
+            </el-select>
+            <el-button size="mini" @click="preview.visible = false; savePreviewSettings()">Hide</el-button>
+          </div>
+        </div>
+        <div class="result-preview__content" v-if="selectedField">
+          <div class="result-preview__meta">
+            <span class="result-preview__field">{{ selectedField.name }}</span>
+            <span class="result-preview__type" v-if="selectedField.type">{{ selectedField.type }}</span>
+          </div>
+          <div class="result-preview__format">
+            <span class="result-preview__label">Format</span>
+            <el-select v-model="columnFormatter" size="mini" @change="savePreviewSettings">
+              <el-option label="Auto" value="auto"></el-option>
+              <el-option label="Raw" value="raw"></el-option>
+              <el-option label="JSON" value="json"></el-option>
+              <el-option label="Array" value="array"></el-option>
+              <el-option label="Text" value="text"></el-option>
+            </el-select>
+          </div>
+          <div class="result-preview__value">
+            <pre v-if="previewContent.isPre">{{ previewContent.text }}</pre>
+            <span v-else>{{ previewContent.text }}</span>
+          </div>
+        </div>
+        <div class="result-preview__empty" v-else>
+          Select a cell to preview.
+        </div>
+      </div>
+    </div>
     <EditDialog ref="editor" :dbType="result.dbType" :result="result" :database="result.database" :table="result.table" :primaryKey="result.primaryKey" :primaryKeyList="result.primaryKeyList" :columnList="result.columnList" @execute="execute" />
     <ExportDialog :visible.sync="exportOption.visible" @exportHandle="confirmExport" />
   </div>
@@ -35,6 +75,7 @@ import ExportDialog from "./component/ExportDialog.vue";
 import Toolbar from "./component/Toolbar";
 import EditDialog from "./component/EditDialog";
 import { util } from "./mixin/util";
+import { normalizeCellValue, formatPreviewValue } from "./previewUtil";
 import { wrapByDb } from "@/common/wrapper";
 let vscodeEvent;
 
@@ -94,6 +135,17 @@ export default {
         editList: {},
         lock: false,
       },
+      preview: {
+        visible: true,
+        pinned: true,
+        position: "right",
+        formatterByColumn: {},
+      },
+      selectedCell: {
+        rowIndex: null,
+        fieldIndex: null,
+        fieldName: null,
+      },
     };
   },
   mounted() {
@@ -106,6 +158,7 @@ export default {
     const handlerData = (data, sameTable) => {
       this.result = data;
       this.toolbar.sql = data.sql;
+      this.clearSelection();
 
       if (sameTable) {
         this.clear();
@@ -158,6 +211,7 @@ export default {
         e.preventDefault();
       }
     };
+    window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("message", ({ data }) => {
       if (!data) return;
       const response = data.content;
@@ -220,8 +274,39 @@ export default {
         document.execCommand("copy");
       }
     });
+    this.loadPreviewSettings();
   },
   methods: {
+    loadPreviewSettings() {
+      try {
+        const raw = window.localStorage.getItem("dbclient.preview.settings");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          this.preview = {
+            ...this.preview,
+            ...parsed,
+            formatterByColumn: parsed.formatterByColumn || {},
+          };
+        }
+      } catch (e) {
+        // ignore
+      }
+    },
+    savePreviewSettings() {
+      try {
+        window.localStorage.setItem(
+          "dbclient.preview.settings",
+          JSON.stringify({
+            visible: this.preview.visible,
+            pinned: this.preview.pinned,
+            position: this.preview.position,
+            formatterByColumn: this.preview.formatterByColumn,
+          })
+        );
+      } catch (e) {
+        // ignore
+      }
+    },
     panelInput(event){
       if(event.code=='Enter' && event.ctrlKey){
         this.execute(this.toolbar.sql)
@@ -258,6 +343,73 @@ export default {
         this.$refs.editor.openEdit(row);
       }
     },
+    clearSelection() {
+      this.selectedCell.rowIndex = null;
+      this.selectedCell.fieldIndex = null;
+      this.selectedCell.fieldName = null;
+    },
+    onCellSelected(payload) {
+      if (!payload || payload.isFilter) return;
+      const rowIndex = payload.rowIndex;
+      if (rowIndex < 0 || rowIndex >= this.displayRows.length) return;
+      const fieldIndex = this.visibleFields.findIndex(
+        (field) => field.name === payload.field
+      );
+      if (fieldIndex === -1) return;
+      this.selectedCell.rowIndex = rowIndex;
+      this.selectedCell.fieldIndex = fieldIndex;
+      this.selectedCell.fieldName = this.visibleFields[fieldIndex].name;
+      if (!this.preview.visible) {
+        this.preview.visible = true;
+        this.savePreviewSettings();
+      }
+    },
+    onKeyDown(event) {
+      const key = event.key;
+      if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(key)) {
+        return;
+      }
+      const target = event.target;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (this.displayRows.length === 0 || this.visibleFields.length === 0) {
+        return;
+      }
+      if (this.selectedCell.rowIndex == null || this.selectedCell.fieldIndex == null) {
+        this.selectedCell.rowIndex = 0;
+        this.selectedCell.fieldIndex = 0;
+        this.selectedCell.fieldName = this.visibleFields[0].name;
+        return;
+      }
+      let nextRow = this.selectedCell.rowIndex;
+      let nextField = this.selectedCell.fieldIndex;
+      switch (key) {
+        case "ArrowUp":
+          nextRow = Math.max(0, nextRow - 1);
+          break;
+        case "ArrowDown":
+          nextRow = Math.min(this.displayRows.length - 1, nextRow + 1);
+          break;
+        case "ArrowLeft":
+          nextField = Math.max(0, nextField - 1);
+          break;
+        case "ArrowRight":
+          nextField = Math.min(this.visibleFields.length - 1, nextField + 1);
+          break;
+      }
+      this.selectedCell.rowIndex = nextRow;
+      this.selectedCell.fieldIndex = nextField;
+      this.selectedCell.fieldName = this.visibleFields[nextField].name;
+      event.preventDefault();
+    },
+    normalizeCellValue,
+    formatPreviewValue,
     confirmExport(exportOption) {
       vscodeEvent.emit("export", {
         option: {
@@ -436,6 +588,54 @@ export default {
     },
   },
   computed: {
+    visibleFields() {
+      return (this.result.fields || []).filter((field) =>
+        this.toolbar.showColumns.includes(field.name.toLowerCase())
+      );
+    },
+    displayRows() {
+      return this.filterData.filter((row) => !row.isFilter);
+    },
+    hasFilterRow() {
+      return this.filterData[0] && this.filterData[0].isFilter;
+    },
+    selectedField() {
+      if (
+        this.selectedCell.fieldIndex == null ||
+        this.selectedCell.fieldIndex < 0 ||
+        this.selectedCell.fieldIndex >= this.visibleFields.length
+      ) {
+        return null;
+      }
+      return this.visibleFields[this.selectedCell.fieldIndex];
+    },
+    selectedRow() {
+      if (
+        this.selectedCell.rowIndex == null ||
+        this.selectedCell.rowIndex < 0 ||
+        this.selectedCell.rowIndex >= this.displayRows.length
+      ) {
+        return null;
+      }
+      return this.displayRows[this.selectedCell.rowIndex];
+    },
+    columnFormatter: {
+      get() {
+        if (!this.selectedField) return "auto";
+        return this.preview.formatterByColumn[this.selectedField.name] || "auto";
+      },
+      set(value) {
+        if (!this.selectedField) return;
+        this.preview.formatterByColumn[this.selectedField.name] = value;
+      },
+    },
+    previewContent() {
+      if (!this.selectedField || !this.selectedRow) {
+        return { text: "", isPre: false };
+      }
+      const value = this.selectedRow[this.selectedField.name];
+      return this.formatPreviewValue(value, this.columnFormatter);
+    },
     filterData() {
       return this.result.data.filter(
         (data) =>
